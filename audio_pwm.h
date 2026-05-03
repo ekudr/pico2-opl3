@@ -2,8 +2,9 @@
 
 #include <stdint.h>
 
-/* GPIO16 → PWM slice 0, channel A on RP2350 ((16>>1)&7 = 0). */
-#define AUDIO_GPIO        16u
+/* GPIO16/17 → PWM slice 0, channels A/B on RP2350 ((16>>1)&7 = 0). */
+#define AUDIO_GPIO_LEFT   16u  /* PWM slice 0, channel A */
+#define AUDIO_GPIO_RIGHT  17u  /* PWM slice 0, channel B */
 #define AUDIO_PWM_SLICE   0u
 #define AUDIO_BUF_SAMPLES 512u  /* samples per half-buffer; 512/49717 ≈ 10.3 ms ISR budget */
 

@@ -2,7 +2,6 @@
 #include "shared.h"
 #include "dbopl_wrapper.h"
 
-#include "math.h"
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/pwm.h"
@@ -16,11 +15,16 @@
 #define PWM_DIV_INT    1u
 #define PWM_DIV_FRAC4  0u
 
+#define PWM_MID         ((PWM_WRAP + 1u) / 2u)
+#define PWM_MID_STEREO  (PWM_MID | (PWM_MID << 16))
+
 /* OPL3 register writes are applied in CHUNK_SIZE-sample steps for timing accuracy. */
 #define CHUNK_SIZE 32u
 
-/* 32-bit buffer: bits[15:0] = PWM channel A compare, bits[31:16] = 0 (channel B unused).
- * 32-bit DMA avoids narrow-write undefined behaviour on the RP2350 AHB bus. */
+/* 32-bit buffer: bits[15:0] = PWM channel A compare (left, GPIO16),
+ *                bits[31:16] = PWM channel B compare (right, GPIO17).
+ * 32-bit DMA avoids narrow-write undefined behaviour on the RP2350 AHB bus
+ * and updates both channels atomically on the next PWM wrap. */
 static uint32_t g_audio_buf[2][AUDIO_BUF_SAMPLES];
 static int16_t  g_opl3_stereo[CHUNK_SIZE * 2];
 
@@ -29,10 +33,11 @@ static uint      g_dma_ch[2];
 
 static void __not_in_flash_func(audio_fill_buffer)(uint buf_idx)
 {
-    /* Fractional carry for first-order noise shaping.
-     * Accumulates the sub-step remainder across samples so the long-term
-     * average output exactly tracks the input — no patterned distortion. */
-    static uint32_t s_frac = 0;
+    /* Per-channel fractional carry for first-order noise shaping.
+     * Independent accumulators keep quantization noise decorrelated between
+     * left and right — no patterned distortion, no inter-channel artefacts. */
+    static uint32_t s_frac_l = 0;
+    static uint32_t s_frac_r = 0;
 
     uint32_t *out     = g_audio_buf[buf_idx];
     uint32_t  cur     = g_opl3_samples_generated;
@@ -52,21 +57,27 @@ static void __not_in_flash_func(audio_fill_buffer)(uint buf_idx)
             OPL3_GenerateStream(&g_chip, g_opl3_stereo, CHUNK_SIZE);
 
             for (uint j = 0; j < CHUNK_SIZE; j++) {
-                int32_t mono = ((int32_t)g_opl3_stereo[j * 2] +
-                                (int32_t)g_opl3_stereo[j * 2 + 1]) >> 1;
+                int32_t L = g_opl3_stereo[j * 2];
+                int32_t R = g_opl3_stereo[j * 2 + 1];
 
                 /* Scale signed 16-bit → full PWM range (0..PWM_WRAP).
                  * u * (PWM_WRAP+1) / 65536, carrying the fractional bits
                  * forward to the next sample instead of discarding them. */
-                uint32_t scaled = (uint32_t)(mono + 32768) * (PWM_WRAP + 1u) + s_frac;
-                uint32_t pwm    = scaled >> 16;
-                s_frac          = scaled & 0xFFFFu;
-                if (pwm > PWM_WRAP) pwm = PWM_WRAP;  /* clamp full-scale edge */
-                out[i + j] = pwm;
+                uint32_t sl = (uint32_t)(L + 32768) * (PWM_WRAP + 1u) + s_frac_l;
+                uint32_t pl = sl >> 16;
+                s_frac_l    = sl & 0xFFFFu;
+                if (pl > PWM_WRAP) pl = PWM_WRAP;
+
+                uint32_t sr = (uint32_t)(R + 32768) * (PWM_WRAP + 1u) + s_frac_r;
+                uint32_t pr = sr >> 16;
+                s_frac_r    = sr & 0xFFFFu;
+                if (pr > PWM_WRAP) pr = PWM_WRAP;
+
+                out[i + j] = pl | (pr << 16);
             }
         } else {
             for (uint j = 0; j < CHUNK_SIZE; j++)
-                out[i + j] = (PWM_WRAP + 1u) / 2u;  /* silence at midpoint */
+                out[i + j] = PWM_MID_STEREO;  /* silence at midpoint, both channels */
         }
     }
 
@@ -93,17 +104,21 @@ static void __isr dma_irq1_handler(void)
 
 void audio_pwm_init(void)
 {
-    gpio_set_function(AUDIO_GPIO, GPIO_FUNC_PWM);
-    gpio_set_drive_strength(AUDIO_GPIO, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_function(AUDIO_GPIO_LEFT,  GPIO_FUNC_PWM);
+    gpio_set_drive_strength(AUDIO_GPIO_LEFT,  GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_function(AUDIO_GPIO_RIGHT, GPIO_FUNC_PWM);
+    gpio_set_drive_strength(AUDIO_GPIO_RIGHT, GPIO_DRIVE_STRENGTH_12MA);
 
-    uint slice_num = pwm_gpio_to_slice_num(AUDIO_GPIO);
+    /* Both pins map to the same slice; channels A and B share the counter. */
+    uint slice_num = pwm_gpio_to_slice_num(AUDIO_GPIO_LEFT);
     pwm_config cfg = pwm_get_default_config();
 
     pwm_config_set_wrap(&cfg, PWM_WRAP);
     pwm_config_set_clkdiv_int_frac4(&cfg, PWM_DIV_INT, PWM_DIV_FRAC4);
     pwm_init(slice_num, &cfg, true);
 
-    pwm_set_gpio_level(AUDIO_GPIO, (PWM_WRAP + 1u) / 2u);
+    pwm_set_gpio_level(AUDIO_GPIO_LEFT,  PWM_MID);
+    pwm_set_gpio_level(AUDIO_GPIO_RIGHT, PWM_MID);
 
     g_dma_ch[0] = dma_claim_unused_channel(true);
     g_dma_ch[1] = dma_claim_unused_channel(true);
@@ -143,7 +158,7 @@ void audio_pwm_init(void)
 void audio_dma_start(void)
 {
     for (uint i = 0; i < AUDIO_BUF_SAMPLES; i++)
-        g_audio_buf[0][i] = g_audio_buf[1][i] = (PWM_WRAP + 1u) / 2u;
+        g_audio_buf[0][i] = g_audio_buf[1][i] = PWM_MID_STEREO;
     __dmb();
     dma_channel_start(g_dma_ch[0]);
 }

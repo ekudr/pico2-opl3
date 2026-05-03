@@ -36,7 +36,7 @@ int main(void)
     gpio_set_dir(23, GPIO_OUT);
     gpio_put(23, 1);
 
-    /* Initialise PWM on GPIO16 and claim DMA channels before Core 1 starts. */
+    /* Initialise stereo PWM on GPIO16/17 and claim DMA channels before Core 1 starts. */
     audio_pwm_init();
 
     /* Launch Core 1; it initialises dbopl (slow table init), registers the

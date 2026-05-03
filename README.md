@@ -1,6 +1,6 @@
 # OPL3 FM Synthesizer on Raspberry Pi Pico 2
 
-A real-time [OPL3 (YMF262)](https://en.wikipedia.org/wiki/Yamaha_OPL#OPL3) FM synthesizer emulator running on the Raspberry Pi Pico 2. It receives `.vgm` / `.vgz` music files from a PC over USB and plays them back through a passive RC low-pass filter on GPIO 16.
+A real-time [OPL3 (YMF262)](https://en.wikipedia.org/wiki/Yamaha_OPL#OPL3) FM synthesizer emulator running on the Raspberry Pi Pico 2. It receives `.vgm` / `.vgz` music files from a PC over USB and plays them back in **stereo** through passive RC low-pass filters on GPIO 16 (left) and GPIO 17 (right).
 
 The synthesis engine is [dbopl](https://www.dosbox.com) (DOSBox OPL3 emulator). ISR budget is ~10 ms; actual render time is ~172 µs.
 
@@ -13,25 +13,34 @@ The synthesis engine is [dbopl](https://www.dosbox.com) (DOSBox OPL3 emulator). 
 | Qty | Part |
 |-----|------|
 | 1 | Raspberry Pi Pico 2 (RP2350) |
-| 1 | Resistor 1 kΩ |
-| 1 | Capacitor 10 nF |
-| 1 | 3.5 mm audio jack (or speaker with amplifier) |
+| 2 | Resistor 1 kΩ |
+| 2 | Capacitor 10 nF |
+| 1 | 3.5 mm stereo audio jack (or stereo speakers with amplifier) |
 
 ### Circuit
 
 ```
-Pico 2                                         Audio out
-─────────────────────────────────────────────────────────
-GPIO 16 ──┬── R1 (1 kΩ) ──┬── TIP (left + right)
+Pico 2                                              Audio out
+──────────────────────────────────────────────────────────────
+GPIO 16 ──┬── R1 (1 kΩ) ──┬── TIP    (left)
            │               │
           GND             C1 (10 nF)
                            │
-                          GND (sleeve)
+                          GND
+GPIO 17 ──┬── R2 (1 kΩ) ──┬── RING   (right)
+           │               │
+          GND             C2 (10 nF)
+                           │
+                          GND
+GND ─────────────────────── SLEEVE
 ```
 
-PWM carrier: **49 717 Hz** — R1 + C1 form a first-order low-pass filter
+Use matched R/C values on both channels for L/R balance.
+
+PWM carrier: **49 717 Hz** — each R + C forms a first-order low-pass filter
 with cutoff ≈ 15.9 kHz, attenuating the carrier by ~10 dB while passing
-the full audio band.
+the full audio band. GPIO 16 and GPIO 17 share PWM slice 0 (channels A/B),
+so left and right samples update on the same PWM cycle — no inter-channel skew.
 
 ### Wiring diagram
 
@@ -39,14 +48,19 @@ the full audio band.
 ┌─────────────────────────────────────────┐
 │           Raspberry Pi Pico 2           │
 │                                         │
-│  GPIO 16 (PWM) ──────────────── [1kΩ] ──┼──── TIP  ───┐
-│                                         │             │  3.5 mm
-│  GND ───────────────────────────────────┼──── SLEEVE ─┤  audio
-│                                         │             │  jack
-│  GPIO 23 (SMPS ctrl) — internal only   │    [10nF]  │
-│                                         │      │     │
-└─────────────────────────────────────────┘     GND    │
-                                                 └──────┘
+│  GPIO 16 (PWM L) ────────────── [1kΩ] ──┼──── TIP    ─┐
+│                                         │   [10nF]    │
+│                                         │     │       │  3.5 mm
+│                                         │    GND      │  stereo
+│  GPIO 17 (PWM R) ────────────── [1kΩ] ──┼──── RING   ─┤  audio
+│                                         │   [10nF]    │  jack
+│                                         │     │       │
+│                                         │    GND      │
+│  GND ───────────────────────────────────┼──── SLEEVE ─┤
+│                                         │             │
+│  GPIO 23 (SMPS ctrl) — internal only    │             │
+└─────────────────────────────────────────┘             │
+                                                  └──────┘
 ```
 
 > **GPIO 23** is driven high in firmware to put the RP2350's onboard SMPS
@@ -130,7 +144,7 @@ push → SPSC queue               pull queue → OPL3_WriteReg
                                 OPL3_GenerateStream → PWM buffer
 ```
 
-- **Audio pipeline:** DMA double-buffer (2 × 512 samples) → PWM → RC filter
+- **Audio pipeline:** DMA double-buffer (2 × 512 stereo frames) → PWM slice 0 (ch.A/B) → RC filters
 - **Synthesis engine:** dbopl (integer-only after one-time float table init)
 - **Timing:** VGM 44 100 Hz ticks converted to OPL3 49 716 Hz via ratio 1381/1225
 - **Binary type:** `copy_to_ram` — all code copied to SRAM at boot, eliminating XIP cache misses
