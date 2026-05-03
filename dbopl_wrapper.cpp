@@ -19,6 +19,21 @@ void OPL3_WriteReg(opl3_chip *, uint16_t reg, uint8_t val)
     g_chip.WriteReg(reg, val);
 }
 
+/* Quadratic soft-knee: slope=1 below KNEE, smoothly rolls off to PEAK at LIMIT.
+ * LIMIT = KNEE + 2*(PEAK-KNEE) ensures f(LIMIT)=PEAK with continuous derivative. */
+static inline int32_t soft_clip(int32_t v) {
+    static const int32_t KNEE  = 24000;
+    static const int32_t PEAK  = 32767;
+    static const int32_t LIMIT = KNEE + 2 * (PEAK - KNEE); /* 41534 */
+    static const int32_t DENOM = 4 * (PEAK - KNEE);        /* 35068 */
+    if (v >= -KNEE && v <= KNEE) return v;
+    int32_t sign = (v >= 0) ? 1 : -1;
+    int32_t x = v * sign;
+    if (x >= LIMIT) return sign * PEAK;
+    x -= KNEE;
+    return sign * (KNEE + x - x * x / DENOM);
+}
+
 void OPL3_GenerateStream(opl3_chip *, int16_t *buf, uint32_t numsamples)
 {
     /* GenerateBlock3 adds into the buffer — must zero first. */
@@ -28,12 +43,8 @@ void OPL3_GenerateStream(opl3_chip *, int16_t *buf, uint32_t numsamples)
 
     g_chip.GenerateBlock3(numsamples, tmp);
 
-    for (uint32_t i = 0; i < numsamples * 2; i++) {
-        int32_t v = tmp[i];
-        if (v > 32767)  v = 32767;
-        if (v < -32768) v = -32768;
-        buf[i] = (int16_t)v;
-    }
+    for (uint32_t i = 0; i < numsamples * 2; i++)
+        buf[i] = (int16_t)soft_clip(tmp[i]);
 }
 
 } /* extern "C" */

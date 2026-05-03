@@ -83,8 +83,8 @@ namespace DBOPL {
 //Uses the value directly
 #define ENV_BITS	( 9 )
 #else
-//Add 3 bits here for more accuracy and would have to be shifted up either way
-#define ENV_BITS	( 9 )
+//3 extra bits give sub-LSB envelope precision; all dependent constants scale accordingly
+#define ENV_BITS	( 12 )
 #endif
 //Limits of the envelope with those bits and when the envelope goes silent
 #define ENV_MIN		0
@@ -589,7 +589,7 @@ INLINE Bits Operator::GetWave( Bitu index, Bitu vol ) {
 	return (waveBase[ index & waveMask ] * MulTable[ vol >> ENV_EXTRA ]) >> MUL_SH;
 #elif ( DBOPL_WAVE == WAVE_TABLELOG )
 	int32_t wave = waveBase[ index & waveMask ];
-	uint32_t total = ( wave & 0x7fff ) + vol << ( 3 - ENV_EXTRA );
+	uint32_t total = ( wave & 0x7fff ) + (vol << ( 3 - ENV_EXTRA ));
 	int32_t sig = ExpTable[ total & 0xff ];
 	uint32_t exp = total >> 8;
 	int32_t neg = wave >> 16;
